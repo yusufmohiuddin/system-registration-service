@@ -50,6 +50,41 @@ def test_patch_not_required(client: FlaskClient) -> None:
     assert response.get_json()["patch_required"] is False
 
 
+def test_dashboard_and_inventory_api(client: FlaskClient) -> None:
+    register(client, "1.2.0")
+    register(client, "1.3.0")
+
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert b"System Patch Compliance" in dashboard.data
+    assert b"capsule-17" in dashboard.data
+
+    inventory = client.get("/api/systems").get_json()
+    assert len(inventory["systems"]) == 2
+    assert {system["status"] for system in inventory["systems"]} == {
+        "compliant",
+        "patch_required",
+    }
+
+
+def test_check_in_updates_installed_version(client: FlaskClient) -> None:
+    system = register(client, "1.2.0")
+    response = client.post(
+        f"/systems/{system['id']}/check-ins",
+        json={"installed_version": "1.3.0"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["installed_version"] == "1.3.0"
+
+
+def test_patch_request_records_approved_intent(client: FlaskClient) -> None:
+    system = register(client, "1.2.0")
+    response = client.post(f"/systems/{system['id']}/patch-requests", json={})
+    assert response.status_code == 202
+    assert response.get_json()["state"] == "queued"
+    assert response.get_json()["target_version"] == "1.3.0"
+
+
 def test_rejects_invalid_registration(client: FlaskClient) -> None:
     response = client.post("/systems", json={"hostname": "", "platform": "linux"})
     assert response.status_code == 400

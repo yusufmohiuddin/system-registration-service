@@ -1,13 +1,14 @@
 import os
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, render_template, request
 from packaging.version import InvalidVersion, Version
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-from system_registration_service.store import SystemStore
+from system_registration_service.store import RegisteredSystem, SystemStore
 
 REQUESTS = Counter(
     "system_registration_http_requests_total",
@@ -19,6 +20,15 @@ LATENCY = Histogram(
     "HTTP request latency.",
     ["method", "endpoint"],
 )
+INVENTORY = Gauge(
+    "system_registration_inventory",
+    "Current systems grouped by compliance status.",
+    ["status"],
+)
+PATCH_REQUESTS = Counter(
+    "system_registration_patch_requests_total",
+    "Patch requests accepted by the service.",
+)
 
 
 def _required_string(payload: Mapping[str, Any], field: str) -> str:
@@ -28,12 +38,50 @@ def _required_string(payload: Mapping[str, Any], field: str) -> str:
     return value.strip()
 
 
+def _validated_version(value: str, field: str) -> Version:
+    try:
+        return Version(value)
+    except InvalidVersion as error:
+        raise ValueError(f"{field} must be a valid software version") from error
+
+
+def _system_status(system: RegisteredSystem, target: Version, stale_after: timedelta) -> str:
+    last_check_in = datetime.fromisoformat(system.last_check_in)
+    if datetime.now(UTC) - last_check_in > stale_after:
+        return "stale"
+    if Version(system.installed_version) < target:
+        return "patch_required"
+    return "compliant"
+
+
 def create_app(store: SystemStore | None = None) -> Flask:
     app = Flask(__name__)
     app.config["STORE"] = store or SystemStore()
-    app.config["SERVICE_VERSION"] = os.getenv("SERVICE_VERSION", "0.1.0")
+    app.config["SERVICE_VERSION"] = os.getenv("SERVICE_VERSION", "0.2.0")
     app.config["GIT_SHA"] = os.getenv("GIT_SHA", "local")
     app.config["ENVIRONMENT"] = os.getenv("ENVIRONMENT", "development")
+    app.config["TARGET_VERSION"] = os.getenv("TARGET_VERSION", "1.3.0")
+    app.config["STALE_AFTER_MINUTES"] = int(os.getenv("STALE_AFTER_MINUTES", "60"))
+
+    def service_store() -> SystemStore:
+        configured_store: SystemStore = app.config["STORE"]
+        return configured_store
+
+    def target_version() -> Version:
+        return _validated_version(app.config["TARGET_VERSION"], "TARGET_VERSION")
+
+    def inventory() -> list[dict[str, Any]]:
+        target = target_version()
+        stale_after = timedelta(minutes=app.config["STALE_AFTER_MINUTES"])
+        systems: list[dict[str, Any]] = []
+        counts = {"compliant": 0, "patch_required": 0, "stale": 0}
+        for system in service_store().list_systems():
+            status = _system_status(system, target, stale_after)
+            counts[status] += 1
+            systems.append({**system.as_dict(), "status": status})
+        for status, count in counts.items():
+            INVENTORY.labels(status).set(count)
+        return systems
 
     @app.before_request
     def start_timer() -> None:
@@ -52,11 +100,25 @@ def create_app(store: SystemStore | None = None) -> Flask:
         return jsonify(error="invalid_request", message=str(error)), 400
 
     @app.get("/")
-    def service_identity() -> Response:
-        return jsonify(
-            service="system-registration-service",
-            purpose="Register systems and evaluate patch compliance",
+    def dashboard() -> str:
+        systems = inventory()
+        counts = {
+            "total": len(systems),
+            "compliant": sum(system["status"] == "compliant" for system in systems),
+            "patch_required": sum(system["status"] == "patch_required" for system in systems),
+            "stale": sum(system["status"] == "stale" for system in systems),
+        }
+        return render_template(
+            "dashboard.html",
+            systems=systems,
+            counts=counts,
+            target_version=str(target_version()),
+            patch_requests=service_store().list_patch_requests(),
         )
+
+    @app.get("/api/systems")
+    def list_systems() -> Response:
+        return jsonify(systems=inventory(), target_version=str(target_version()))
 
     @app.post("/systems")
     def register_system() -> tuple[Response, int]:
@@ -67,43 +129,65 @@ def create_app(store: SystemStore | None = None) -> Flask:
         hostname = _required_string(payload, "hostname")
         platform = _required_string(payload, "platform")
         installed_version = _required_string(payload, "installed_version")
-        try:
-            Version(installed_version)
-        except InvalidVersion as error:
-            raise ValueError("installed_version must be a valid software version") from error
+        _validated_version(installed_version, "installed_version")
 
-        system = app.config["STORE"].register(hostname, platform, installed_version)
+        system = service_store().register(hostname, platform, installed_version)
         return jsonify(system.as_dict()), 201
 
     @app.get("/systems/<system_id>")
     def get_system(system_id: str) -> tuple[Response, int] | Response:
-        system = app.config["STORE"].get(system_id)
+        system = service_store().get(system_id)
+        if system is None:
+            return jsonify(error="not_found", message="system is not registered"), 404
+        status = _system_status(
+            system,
+            target_version(),
+            timedelta(minutes=app.config["STALE_AFTER_MINUTES"]),
+        )
+        return jsonify(**system.as_dict(), status=status)
+
+    @app.post("/systems/<system_id>/check-ins")
+    def check_in(system_id: str) -> tuple[Response, int] | Response:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        installed_version = _required_string(payload, "installed_version")
+        _validated_version(installed_version, "installed_version")
+        system = service_store().check_in(system_id, installed_version)
         if system is None:
             return jsonify(error="not_found", message="system is not registered"), 404
         return jsonify(system.as_dict())
 
     @app.get("/systems/<system_id>/patch-status")
     def patch_status(system_id: str) -> tuple[Response, int] | Response:
-        system = app.config["STORE"].get(system_id)
+        system = service_store().get(system_id)
         if system is None:
             return jsonify(error="not_found", message="system is not registered"), 404
 
-        target = request.args.get("target_version", "").strip()
-        if not target:
-            raise ValueError("target_version query parameter is required")
-        try:
-            installed_version = Version(system.installed_version)
-            target_version = Version(target)
-        except InvalidVersion as error:
-            raise ValueError("target_version must be a valid software version") from error
+        target = request.args.get("target_version", app.config["TARGET_VERSION"]).strip()
+        installed_version = Version(system.installed_version)
+        requested_target = _validated_version(target, "target_version")
 
         return jsonify(
             system_id=system.id,
             hostname=system.hostname,
             installed_version=str(installed_version),
-            target_version=str(target_version),
-            patch_required=installed_version < target_version,
+            target_version=str(requested_target),
+            patch_required=installed_version < requested_target,
         )
+
+    @app.post("/systems/<system_id>/patch-requests")
+    def request_patch(system_id: str) -> tuple[Response, int]:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        target = str(payload.get("target_version", app.config["TARGET_VERSION"])).strip()
+        requested_target = _validated_version(target, "target_version")
+        patch_request = service_store().request_patch(system_id, str(requested_target))
+        if patch_request is None:
+            return jsonify(error="not_found", message="system is not registered"), 404
+        PATCH_REQUESTS.inc()
+        return jsonify(patch_request.as_dict()), 202
 
     @app.get("/health/live")
     def liveness() -> Response:
@@ -124,6 +208,7 @@ def create_app(store: SystemStore | None = None) -> Flask:
 
     @app.get("/metrics")
     def metrics() -> Response:
+        inventory()
         return Response(generate_latest(), content_type=CONTENT_TYPE_LATEST)
 
     return app

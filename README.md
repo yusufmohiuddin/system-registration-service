@@ -1,15 +1,20 @@
 # System Registration Service
 
-A small Flask API that registers managed systems and evaluates whether their
-installed software version meets an approved patch target.
+A small Flask service with an operations dashboard that registers managed
+systems, tracks check-ins, evaluates patch compliance, and records approved
+patch intent.
 
 ## Business use case
 
 Operations clients register a hostname, platform, and installed version. An
 authorized caller can retrieve that registration and ask whether a newer target
-version requires patching. The current implementation uses in-memory storage to
-keep the platform-onboarding demonstration bounded; production persistence and
-authentication are explicit future capabilities.
+version requires patching. Operators can see compliant, patch-required, and
+stale systems on the dashboard and queue a patch request for execution by a
+separately authenticated agent.
+
+The current implementation uses in-memory storage to keep the platform-onboarding
+demonstration bounded. Production persistence, authentication, agent identity,
+signed commands, and patch execution are explicit future capabilities.
 
 ## Run locally
 
@@ -29,4 +34,4 @@ curl -sS 'http://localhost:8080/systems/SYSTEM_ID/patch-status?target_version=1.
 ```
 
 Operational endpoints are `/health/live`, `/health/ready`, `/version`, and
-`/metrics`.
+`/metrics`. Open `http://localhost:8080/` for the dashboard.

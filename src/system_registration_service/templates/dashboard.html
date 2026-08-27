@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Patch Compliance</title>
+  <style>
+    :root { color-scheme:dark; --bg:#07101f; --panel:#111d31; --line:#263750; --text:#e8eef8; --muted:#91a3bd; --blue:#52a8ff; --green:#36d399; --orange:#fbbf24; --red:#fb7185; }
+    * { box-sizing:border-box; } body { margin:0; font-family:Inter,ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 80% 0,#16355b 0,transparent 32%),var(--bg); color:var(--text); }
+    main { max-width:1180px; margin:auto; padding:48px 24px 72px; } header { display:flex; justify-content:space-between; align-items:end; gap:24px; margin-bottom:30px; }
+    h1 { margin:0 0 8px; font-size:34px; letter-spacing:-.03em; } p { margin:0; color:var(--muted); }
+    .target { padding:10px 14px; border:1px solid var(--line); border-radius:999px; color:var(--blue); background:#0b1729; }
+    .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:28px; }
+    .card,.panel { border:1px solid var(--line); background:rgba(17,29,49,.88); border-radius:16px; box-shadow:0 18px 50px rgba(0,0,0,.2); }
+    .card { padding:20px; } .card strong { display:block; font-size:30px; margin-top:6px; }
+    .label { color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.08em; }
+    .green { color:var(--green); } .orange { color:var(--orange); } .red { color:var(--red); }
+    .panel { overflow:hidden; } .panel h2 { font-size:17px; margin:0; padding:20px 22px; border-bottom:1px solid var(--line); }
+    table { width:100%; border-collapse:collapse; } th,td { padding:15px 18px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; }
+    th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+    .badge { display:inline-block; padding:5px 9px; border-radius:999px; font-size:12px; background:#17263d; }
+    .empty { padding:38px; text-align:center; color:var(--muted); } footer { margin-top:18px; font-size:12px; color:var(--muted); } code { color:var(--blue); }
+    @media(max-width:760px){ .cards{grid-template-columns:repeat(2,1fr)} header{align-items:start;flex-direction:column} table{display:block;overflow-x:auto} }
+  </style>
+</head>
+<body><main>
+  <header><div><h1>System Patch Compliance</h1><p>Inventory, check-in health, and approved patch intent.</p></div><div class="target">Approved target: <strong>{{ target_version }}</strong></div></header>
+  <section class="cards">
+    <article class="card"><span class="label">Registered</span><strong>{{ counts.total }}</strong></article>
+    <article class="card"><span class="label">Compliant</span><strong class="green">{{ counts.compliant }}</strong></article>
+    <article class="card"><span class="label">Patch required</span><strong class="orange">{{ counts.patch_required }}</strong></article>
+    <article class="card"><span class="label">Stale check-in</span><strong class="red">{{ counts.stale }}</strong></article>
+  </section>
+  <section class="panel"><h2>Managed systems</h2>
+    {% if systems %}<table><thead><tr><th>Hostname</th><th>Platform</th><th>Installed</th><th>Last check-in</th><th>Status</th></tr></thead><tbody>
+    {% for system in systems %}<tr><td><strong>{{ system.hostname }}</strong></td><td>{{ system.platform }}</td><td><code>{{ system.installed_version }}</code></td><td>{{ system.last_check_in[:19].replace('T',' ') }} UTC</td><td><span class="badge {{ 'green' if system.status == 'compliant' else 'orange' if system.status == 'patch_required' else 'red' }}">{{ system.status.replace('_',' ') }}</span></td></tr>{% endfor %}
+    </tbody></table>{% else %}<div class="empty">No systems have registered yet. Use <code>POST /systems</code> to add the first client.</div>{% endif %}
+  </section>
+  <footer>Coordination boundary: patch requests record approved intent; execution remains the responsibility of an authenticated system agent.</footer>
+</main></body></html>
