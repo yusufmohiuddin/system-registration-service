@@ -1,0 +1,42 @@
+[project]
+name = "system-registration-service"
+version = "0.1.0"
+description = "System registration and patch-compliance API"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "flask>=3.1.2,<4",
+  "packaging>=25.0,<26",
+  "prometheus-client>=0.23.1,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/system_registration_service"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["system_registration_service"]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.19.1,<2",
+  "pytest>=9.0.2,<10",
+  "pytest-cov>=7.0.0,<8",
+  "ruff>=0.15.0,<1",
+]
